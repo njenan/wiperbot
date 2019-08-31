@@ -11,6 +11,7 @@
     "dependencies": {
         "cron": "^1.7.1",
         "discord.io": "https://github.com/woor/discord.io/tarball/gateway_v6",
-        "discord.js": "^11.5.1"
+        "discord.js": "^11.5.1",
+        "winston": "^3.2.1"
     }
 }

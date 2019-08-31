@@ -6,7 +6,7 @@ var bot = new Discord.Client();
 
 var wipe;
 var config = {
-  wipeTimeout : '30',
+  wipeDelay : '30',
 };
 
 var blacklist = {};
@@ -16,6 +16,7 @@ var cronSchedule = '0 0 1 * * *';
 
 var commands = {
   'wipe' : (message) => {
+    // TODO broadcast warning in all channels
     if (wipe) {
       message.channel.send(
           'cannot schedule a wipe while a wipe is in progress');
@@ -25,15 +26,14 @@ var commands = {
     console.log('scheduling wipe');
 
     message.channel.send(`wipe scheduled
-all non-protected channels will be wiped in ${config.wipeTimeout} seconds
+all non-protected channels will be wiped in ${config.wipeDelay} seconds
 type \`!wiper wipe cancel\` to abort`);
-    let wipeTimeout = parseInt(config.wipeTimeout);
+    let wipeDelay = parseInt(config.wipeDelay);
 
-    if (isNaN(wipeTimeout)) {
-      console.log('invalid value for wipeTimeout ' + config.wipeTimeout);
-      message.channel.send('invalid value for wipeTimeout ' +
-                           config.wipeTimeout);
-      wipeTimeout = 30;
+    if (isNaN(wipeDelay)) {
+      console.log('invalid value for wipeDelay ' + config.wipeDelay);
+      message.channel.send('invalid value for wipeDelay ' + config.wipeDelay);
+      wipeDelay = 30;
     }
 
     wipe = setTimeout(() => {
@@ -57,9 +57,11 @@ type \`!wiper wipe cancel\` to abort`);
 
       targets.sort((a, b) => a.position < b.position);
 
-      targets.forEach(
-          chan => { message.guild.createChannel(chan.name, chan); });
-    }, wipeTimeout * 1000)
+      targets.forEach(chan => {
+        console.log('creating channel ' + chan.name);
+        message.guild.createChannel(chan.name, chan);
+      });
+    }, wipeDelay * 1000)
     return;
   },
 
@@ -161,12 +163,15 @@ cron schedule format is http://www.nncron.ru/help/EN/working/cron-format.htm`);
     }
 
     let schedule = `${s[3]} ${s[4]} ${s[5]} ${s[6]} ${s[7]} ${s[8]}`;
+    cronSchedule = schedule;
     job.setTime(new cron.CronTime(schedule));
     job.start();
 
     message.channel.send(`wipe schedule is now set to \`${schedule}\`
 next wipe will be at ${job.nextDates()}`);
   },
+
+  'logs' : (message) => { message.channel.send('not implemented'); },
 
   'help' : (message) => {
     let toSend = '';
@@ -212,12 +217,9 @@ bot.login(auth.token);
 bot.on('ready', evt => {
   job = new cron.CronJob(cronSchedule, () => {
     console.log('schedule wipe has triggered');
-    // TODO I need to pass in a proper object
     commands['wipe']({
-      guild : {
-        createChannel :
-            (name, options) => { console.log('creating channel ' + name); }
-      },
+      guild : bot.guilds.first(),
+      // TODO make sure this gets broadcast to the channels
       channel : {send : (text) => { console.log(text); }}
     });
     job.start();

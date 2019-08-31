@@ -9,6 +9,7 @@
     "author": "Kissy",
     "license": "AGPL-3.0-or-later",
     "dependencies": {
+        "cron": "^1.7.1",
         "discord.io": "https://github.com/woor/discord.io/tarball/gateway_v6",
         "discord.js": "^11.5.1"
     }

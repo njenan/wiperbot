@@ -1,5 +1,6 @@
 var Discord = require('discord.js');
 var auth = require('./auth.json');
+var cron = require('cron');
 
 var bot = new Discord.Client();
 
@@ -9,6 +10,9 @@ var config = {
 };
 
 var blacklist = {};
+
+var job;
+var cronSchedule = '0 0 1 * * *';
 
 var commands = {
   'wipe' : (message) => {
@@ -21,7 +25,7 @@ var commands = {
     console.log('scheduling wipe');
 
     message.channel.send(`wipe scheduled
-all non-blacklisted channels will be wiped in ${config.wipeTimeout} seconds
+all non-protected channels will be wiped in ${config.wipeTimeout} seconds
 type \`!wiper wipe cancel\` to abort`);
     let wipeTimeout = parseInt(config.wipeTimeout);
 
@@ -68,6 +72,7 @@ type \`!wiper wipe cancel\` to abort`);
   },
 
   'config' : (message) => {
+    // TODO add a way to mask config (so we can set the token)
     console.log('printing config');
 
     let toSend = '';
@@ -100,11 +105,11 @@ type \`!wiper wipe cancel\` to abort`);
     message.channel.send(`set ${split[3]} as ${split[4]}`);
   },
 
-  'blacklist' : (message) => {
+  'protected' : (message) => {
     console.log('displaying blacklist');
 
     if (Object.keys(blacklist).length === 0) {
-      message.channel.send('No channels added to blacklist');
+      message.channel.send('No channels protected');
       return;
     }
 
@@ -114,10 +119,11 @@ type \`!wiper wipe cancel\` to abort`);
       toSend = toSend + '\n' + i + '\n';
     }
 
-    message.channel.send('blacklist is: ```' + toSend + '```');
+    message.channel.send('protected channels are: ```' + toSend + '```');
   },
 
-  'blacklist add <channel>' : (message) => {
+  'protected add <channel>' : (message) => {
+    // TODO add in check that channel actually exists
     let split = message.content.split(' ');
     if (split.length !== 4) {
       message.channel.send('invalid command');
@@ -125,10 +131,10 @@ type \`!wiper wipe cancel\` to abort`);
     }
 
     blacklist[split[3]] = true;
-    message.channel.send('added channel ' + split[3] + ' to blacklist');
+    message.channel.send('added channel ' + split[3] + ' to protected list');
   },
 
-  'blacklist remove <channel>' : (message) => {
+  'protected remove <channel>' : (message) => {
     let split = message.content.split(' ');
     if (split.length !== 4) {
       message.channel.send('invalid command');
@@ -136,17 +142,40 @@ type \`!wiper wipe cancel\` to abort`);
     }
 
     delete blacklist[split[3]];
-    message.channel.send('removed channel ' + split[3] + ' from blacklist');
+    message.channel.send('removed channel ' + split[3] +
+                         ' from protected list');
+  },
+
+  'schedule' : (message) => {
+    message.channel.send(`The next wipe is scheduled for ${job.nextDates()}
+current cron schedule is \`${cronSchedule}\`
+
+cron schedule format is http://www.nncron.ru/help/EN/working/cron-format.htm`);
+  },
+
+  'schedule set <cron format>' : (message) => {
+    let s = message.content.split(' ');
+    if (s.length !== 9) {
+      message.channel.send('invalid command');
+      return;
+    }
+
+    let schedule = `${s[3]} ${s[4]} ${s[5]} ${s[6]} ${s[7]} ${s[8]}`;
+    job.setTime(new cron.CronTime(schedule));
+    job.start();
+
+    message.channel.send(`wipe schedule is now set to \`${schedule}\`
+next wipe will be at ${job.nextDates()}`);
   },
 
   'help' : (message) => {
     let toSend = '';
-
     let available = Object.keys(commands).filter(c => c !== 'default');
 
     available.forEach(i => { toSend = toSend + i + '\n'; });
 
-    message.channel.send('Available commands are:```\n' + toSend + '```');
+    message.channel.send('Available commands are:```\n' + toSend +
+                         '```\nRun me by typing: `!wiper <command>`');
   },
 
   'default' : (message) => {
@@ -180,7 +209,22 @@ function findMatchingCommand(text) {
 
 bot.login(auth.token);
 
-bot.on('ready', evt => { console.log('Bot is ready to receive messages'); });
+bot.on('ready', evt => {
+  job = new cron.CronJob(cronSchedule, () => {
+    console.log('schedule wipe has triggered');
+    // TODO I need to pass in a proper object
+    commands['wipe']({
+      guild : {
+        createChannel :
+            (name, options) => { console.log('creating channel ' + name); }
+      },
+      channel : {send : (text) => { console.log(text); }}
+    });
+    job.start();
+  });
+
+  console.log('Bot is ready to receive messages');
+});
 
 bot.on('message', message => {
   if (message.content.startsWith('!wiper')) {

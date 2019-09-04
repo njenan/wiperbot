@@ -21,6 +21,7 @@ var wipe;
 var config = {
   wipeDelay : '30',
   privilegedRole : 'Admin',
+  enableScheduledWipes : true,
 };
 
 var blacklist = {};
@@ -68,15 +69,7 @@ type \`!wiper wipe cancel\` to abort`;
 
         logger.info('beginning wipe');
 
-        let targets = [];
-        bot.channels.forEach(chan => {
-          if (chan.type === 'text') {
-            if (!blacklist[chan.name]) {
-              targets.push(chan);
-            }
-          }
-        });
-
+        let targets = getTargets();
         targets.forEach(chan => {
           logger.info('deleting channel ' + chan.name);
           chan.delete();
@@ -90,6 +83,19 @@ type \`!wiper wipe cancel\` to abort`;
         });
       }, wipeDelay * 1000)
       return;
+    }
+  },
+
+  'wipe dry-run' : {
+    command : (msg) => {
+      let targets = getTargets();
+
+      let toSend = 'The following channels will be wiped:```';
+      targets.forEach(chan => { toSend = toSend + '\n' + chan.name; });
+
+      toSend = toSend + '```';
+
+      msg.channel.send(toSend);
     }
   },
 
@@ -291,10 +297,17 @@ ip: ${ip}
       let toSend = '';
       let available = Object.keys(commands).filter(c => c !== 'default');
 
-      available.forEach(i => { toSend = toSend + i + '\n'; });
+      available.forEach(i => {
+        if (commands[i].privileged) {
+          toSend = toSend + '* ';
+        }
 
-      message.channel.send('Available commands are:```\n' + toSend +
-                           '```\nRun me by typing: `!wiper <command>`');
+        toSend = toSend + i + '\n';
+      });
+
+      message.channel.send(
+          'Available commands are:```\n' + toSend +
+          '```\nRun me by typing: `!wiper <command>`\n`*` denotes a privileged command that can only be run by the privileged role specified in \n`!wiper config`');
     }
   },
 
@@ -334,13 +347,20 @@ bot.login(auth.token);
 bot.on('ready', evt => {
   job = new cron.CronJob(cronSchedule, () => {
     logger.info('schedule wipe has triggered');
-    commands['wipe'].command({
-      guild : bot.guilds.first(),
-      // TODO make sure this gets broadcast to the channels
-      channel : {send : (text) => { logger.info(text); }}
-    });
-    job.start();
+
+    if (config.enableScheduledWipes) {
+      commands['wipe'].command({
+        guild : bot.guilds.first(), // TODO this could be bad if the bot is in
+                                    // multiple guilds
+        // TODO make sure this gets broadcast to the channels
+        channel : {send : (text) => { logger.info(text); }}
+      });
+    } else {
+      logger.info('scheduled wipes are disabled, skipping');
+    }
   });
+
+  job.start();
 
   logger.info('Bot is ready to receive messages');
 });
@@ -362,3 +382,17 @@ bot.on('message', message => {
     command.command(message);
   }
 });
+
+function getTargets() {
+  let targets = [];
+
+  bot.channels.forEach(chan => {
+    if (chan.type === 'text') {
+      if (!blacklist[chan.name]) {
+        targets.push(chan);
+      }
+    }
+  });
+
+  return targets;
+}

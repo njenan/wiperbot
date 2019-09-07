@@ -1,5 +1,5 @@
 let exec = require('child_process').exec
-
+let formatInfos = require('../padding');
 module.exports = logger => {
   return (message) => {
     exec('git rev-parse HEAD', (err, gitSha) => {
@@ -14,36 +14,38 @@ module.exports = logger => {
           logger.error(err);
         }
 
-        exec('dig +short myip.opendns.com @resolver1.opendns.com',
-             (err, ip) => {
-               if (err) {
-                 ip = 'ERR';
-                 logger.error(err);
-               }
+        exec('dig +short myip.opendns.com @resolver1.opendns.com', (err,
+                                                                    ip) => {
+          if (err) {
+            ip = 'ERR';
+            logger.error(err);
+          }
 
-               exec('uname', (err, os) => {
-                 if (err) {
-                   os = 'ERR';
-                   logger.error(err);
-                 }
+          exec('uname', (err, os) => {
+            if (err) {
+              os = 'ERR';
+              logger.error(err);
+            }
 
-                 exec('uname -r', (err, osv) => {
-                   if (err) {
-                     osv = 'ERR';
-                     logger.error(err);
-                   }
+            exec('uname -r', (err, osv) => {
+              if (err) {
+                osv = 'ERR';
+                logger.error(err);
+              }
 
-                   message.channel.send(`Wiper Bot Info:\`\`\`
-os: ${os.replace('\n', '')}
-os version: ${osv.replace('\n', '')}
-bot version: ${gitSha.replace('\n', '')}
-node version: ${nodeVersion.replace('\n', '')}
-server time: ${new Date().toTimeString()}
-ip: ${ip}
-\`\`\``);
-                 });
-               });
-             });
+              let infos = [
+                {key : 'os', value : os}, {key : 'os version', value : osv},
+                {key : 'bot version', value : gitSha},
+                {key : 'node version', value : nodeVersion},
+                {key : 'server time', value : new Date().toTimeString()},
+                {key : 'ip', value : ip}
+              ];
+
+              let toSend = formatInfos(infos);
+              message.channel.send('Wiper bot info: \n```' + toSend + '\n```');
+            });
+          });
+        });
       });
     });
   };

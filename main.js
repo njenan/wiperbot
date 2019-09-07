@@ -34,6 +34,8 @@ let logger = winston.createLogger({
   }) ]
 });
 
+logger.info('logger initiated');
+
 function strip(command) {
   let index = command.indexOf('<');
   if (index === -1) {

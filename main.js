@@ -26,12 +26,15 @@ let wipeTimeout = require('./wipeTimeout');
 let logger = winston.createLogger({
   level : 'info',
   defaultMeta : {service : 'wiper bot'},
-  transports : [ new winston.transports.File({
-    filename : 'out.log',
-    format : winston.format.combine(
-        winston.format.timestamp({format : 'YYYY-MM-DD hh:mm:ss A ZZ'}),
-        winston.format.json())
-  }) ]
+  transports : [
+    new winston.transports.File({
+      filename : 'out.log',
+      format : winston.format.combine(
+          winston.format.timestamp({format : 'YYYY-MM-DD hh:mm:ss A ZZ'}),
+          winston.format.json())
+    }),
+    new winston.transports.Console({format : winston.format.simple()})
+  ]
 });
 
 logger.info('logger initiated');

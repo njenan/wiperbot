@@ -88,7 +88,7 @@ lowdb(adaptor).then((db) => {
           {privileged : true, command : protectedRemove(db)},
       'logs' : {command : logs},
       'logs all' : {command : notImplemented},
-      'info' : {command : info},
+      'info' : {command : info(logger)},
       'default' : {command : defaultCmd}
     };
     commands.help = {command : help(commands)},

@@ -3,6 +3,8 @@ var auth = require('./auth.json');
 var cron = require('cron');
 var exec = require('child_process').exec
 var winston = require('winston');
+var lowdb = require('lowdb');
+var FileAsync = require('lowdb/adapters/FileAsync');
 
 var logger = winston.createLogger({
   level : 'info',
@@ -15,268 +17,278 @@ var logger = winston.createLogger({
   }) ]
 });
 
+let adaptor = new FileAsync('db.json');
+
 var bot = new Discord.Client();
 
-var wipe;
-var config = {
-  wipeDelay : '30',
-  privilegedRole : 'Admin',
-  enableScheduledWipes : true,
-};
+lowdb(adaptor).then((db) => {
+  db.read().then(() => {
+    logger.info('database file loaded');
 
-var blacklist = {};
+    var wipe;
+    var job;
 
-var job;
-var cronSchedule = '0 0 1 * * *';
+    var LOG_FILE = './out.log';
 
-var LOG_FILE = './out.log';
+    var commands = {
+      'wipe' : {
+        privileged : true,
+        command : (message) => {
+          // TODO broadcast warning in all channels
+          if (wipe) {
+            message.channel.send(
+                'cannot schedule a wipe while a wipe is in progress');
+            return;
+          }
 
-var commands = {
-  'wipe' : {
-    privileged : true,
-    command : (message) => {
-      // TODO broadcast warning in all channels
-      if (wipe) {
-        message.channel.send(
-            'cannot schedule a wipe while a wipe is in progress');
-        return;
-      }
+          logger.info('scheduling wipe');
 
-      logger.info('scheduling wipe');
+          let wipeDelay = db.get('config.wipeDelay');
 
-      let toSend = `wipe scheduled
-all non-protected channels will be wiped in ${config.wipeDelay} seconds
+          let toSend = `wipe scheduled
+all non-protected channels will be wiped in ${wipeDelay} seconds
 type \`!wiper wipe cancel\` to abort`;
 
-      bot.channels.forEach(chan => {
-        if (chan.type === 'text') {
-          if (!blacklist[chan.name]) {
-            chan.send(toSend);
+          let blacklist = db.get('protected').value();
+          bot.channels.forEach(chan => {
+            if (chan.type === 'text') {
+              if (!blacklist[chan.name]) {
+                chan.send(toSend);
+              }
+            }
+          });
+
+          wipeDelayInt = parseInt(wipeDelay);
+
+          if (isNaN(wipeDelayInt)) {
+            logger.info('invalid value for wipeDelay ' + wipeDelay);
+            message.channel.send('invalid value for wipeDelay ' + wipeDelay);
+            wipeDelayInt = 30;
           }
+
+          wipe = setTimeout(() => {
+            wipe = null;
+
+            logger.info('beginning wipe');
+
+            let targets = getTargets();
+
+            targets.forEach(chan => {
+              logger.info('deleting channel ' + chan.name);
+              chan.delete();
+            });
+
+            targets.sort((a, b) => a.position < b.position);
+
+            targets.forEach(chan => {
+              logger.info('creating channel ' + chan.name);
+              message.guild.createChannel(chan.name, chan);
+            });
+          }, wipeDelayInt * 1000)
+          return;
         }
-      });
+      },
 
-      let wipeDelay = parseInt(config.wipeDelay);
+      'wipe dry-run' : {
+        command : (msg) => {
+          let targets = getTargets();
+          let toSend = 'The following channels will be wiped:```';
+          targets.forEach(chan => { toSend = toSend + '\n' + chan.name; });
 
-      if (isNaN(wipeDelay)) {
-        logger.info('invalid value for wipeDelay ' + config.wipeDelay);
-        message.channel.send('invalid value for wipeDelay ' + config.wipeDelay);
-        wipeDelay = 30;
-      }
+          toSend = toSend + '```';
 
-      wipe = setTimeout(() => {
-        wipe = null;
+          msg.channel.send(toSend);
+        }
+      },
 
-        logger.info('beginning wipe');
+      'wipe cancel' : {
+        privileged : true,
+        command : (message) => {
+          logger.info('wipe canceled');
+          clearTimeout(wipe);
+          wipe = null;
 
-        let targets = getTargets();
-        targets.forEach(chan => {
-          logger.info('deleting channel ' + chan.name);
-          chan.delete();
-        });
+          message.channel.send('wipe canceled')
+        }
+      },
 
-        targets.sort((a, b) => a.position < b.position);
+      'config' : {
+        command : (message) => {
+          // TODO add a way to mask config (so we can set the token)
+          logger.info('printing config');
 
-        targets.forEach(chan => {
-          logger.info('creating channel ' + chan.name);
-          message.guild.createChannel(chan.name, chan);
-        });
-      }, wipeDelay * 1000)
-      return;
-    }
-  },
+          let toSend = '';
+          let config = db.get('config').value();
 
-  'wipe dry-run' : {
-    command : (msg) => {
-      let targets = getTargets();
+          // TODO do some padding so all the variables are equal length
+          for (let i in config) {
+            toSend = toSend + '\n' + i + ': ' + config[i];
+          }
 
-      let toSend = 'The following channels will be wiped:```';
-      targets.forEach(chan => { toSend = toSend + '\n' + chan.name; });
+          message.channel.send('Current config is:```\n' + toSend + '```');
+        }
+      },
 
-      toSend = toSend + '```';
+      'config set <name> <value>' : {
+        privileged : true,
+        command : (message) => {
+          let split = message.content.split(' ');
 
-      msg.channel.send(toSend);
-    }
-  },
+          if (split.length !== 5) {
+            logger.info('invalid config set "' + message.content + "'");
+            message.channel.send(
+                'invalid command, config set commands should be in the form `!wiper config set variable value`');
+            return;
+          }
 
-  'wipe cancel' : {
-    privileged : true,
-    command : (message) => {
-      logger.info('wipe canceled');
-      clearTimeout(wipe);
-      wipe = null;
+          if (!db.get('config.' + split[3]).value()) {
+            logger.info('invalid variable ' + split[3]);
+            message.channel.send('invalid variable ' + split[3]);
+            return;
+          }
 
-      message.channel.send('wipe canceled')
-    }
-  },
+          db.set('config.' + split[3], split[4]).write().then(() => {
+            message.channel.send(`set ${split[3]} as ${split[4]}`);
+          });
+        }
+      },
 
-  'config' : {
-    command : (message) => {
-      // TODO add a way to mask config (so we can set the token)
-      logger.info('printing config');
+      'protected' : {
+        command : (message) => {
+          logger.info('displaying blacklist');
 
-      let toSend = '';
+          let blacklist = db.get('protected').value()
+          if (Object.keys(blacklist).length === 0) {
+            message.channel.send('No channels protected');
+            return;
+          }
 
-      // TODO do some padding so all the variables are equal length
-      for (let i in config) {
-        toSend = toSend + '\n' + i + ': ' + config[i];
-      }
+          let toSend = '';
 
-      message.channel.send('Current config is:```\n' + toSend + '```');
-    }
-  },
+          for (let i in blacklist) {
+            toSend = toSend + '\n' + i + '\n';
+          }
 
-  'config set <name> <value>' : {
-    privileged : true,
-    command : (message) => {
-      let split = message.content.split(' ');
+          message.channel.send('protected channels are: ```' + toSend + '```');
+        }
+      },
 
-      if (split.length !== 5) {
-        logger.info('invalid config set "' + message.content + "'");
-        message.channel.send(
-            'invalid command, config set commands should be in the form `!wiper config set variable value`');
-        return;
-      }
+      'protected add <channel>' : {
+        privileged : true,
+        command : (message) => {
+          // TODO add in check that channel actually exists
+          let split = message.content.split(' ');
+          if (split.length !== 4) {
+            message.channel.send('invalid command');
+            return;
+          }
 
-      if (!config[split[3]]) {
-        logger.info('invalid variable ' + split[3]);
-        message.channel.send('invalid variable ' + split[3]);
-        return;
-      }
+          db.set('protected.' + split[3], true).write().then(() => {
+            message.channel.send('added channel ' + split[3] +
+                                 ' to protected list');
+          });
+        }
+      },
 
-      config[split[3]] = split[4];
-      message.channel.send(`set ${split[3]} as ${split[4]}`);
-    }
-  },
+      'protected remove <channel>' : {
+        privileged : true,
+        command : (message) => {
+          let split = message.content.split(' ');
+          if (split.length !== 4) {
+            message.channel.send('invalid command');
+            return;
+          }
 
-  'protected' : {
-    command : (message) => {
-      logger.info('displaying blacklist');
+          db.set('protected.' + split[3], null).write().then(() => {
+            message.channel.send('removed channel ' + split[3] +
+                                 ' from protected list');
+          });
+        }
+      },
 
-      if (Object.keys(blacklist).length === 0) {
-        message.channel.send('No channels protected');
-        return;
-      }
+      'schedule' : {
+        command : (message) => {
+          let cronSchedule = db.get('cronSchedule').value();
 
-      let toSend = '';
-
-      for (let i in blacklist) {
-        toSend = toSend + '\n' + i + '\n';
-      }
-
-      message.channel.send('protected channels are: ```' + toSend + '```');
-    }
-  },
-
-  'protected add <channel>' : {
-    privileged : true,
-    command : (message) => {
-      // TODO add in check that channel actually exists
-      let split = message.content.split(' ');
-      if (split.length !== 4) {
-        message.channel.send('invalid command');
-        return;
-      }
-
-      blacklist[split[3]] = true;
-      message.channel.send('added channel ' + split[3] + ' to protected list');
-    }
-  },
-
-  'protected remove <channel>' : {
-    privileged : true,
-    command : (message) => {
-      let split = message.content.split(' ');
-      if (split.length !== 4) {
-        message.channel.send('invalid command');
-        return;
-      }
-
-      delete blacklist[split[3]];
-      message.channel.send('removed channel ' + split[3] +
-                           ' from protected list');
-    }
-  },
-
-  'schedule' : {
-    command : (message) => {
-      message.channel.send(`The next wipe is scheduled for ${job.nextDates()}
+          message.channel.send(
+              `The next wipe is scheduled for ${job.nextDates()}
 Current cron schedule is \`${cronSchedule}\`
 Server time is ${new Date().toTimeString()}
 
 Cron schedule format is http://www.nncron.ru/help/EN/working/cron-format.htm`);
-    }
-  },
-
-  'schedule set <cron format>' : {
-    privileged : true,
-    command : (message) => {
-      let s = message.content.split(' ');
-      if (s.length !== 9) {
-        message.channel.send('invalid command');
-        return;
-      }
-
-      let schedule = `${s[3]} ${s[4]} ${s[5]} ${s[6]} ${s[7]} ${s[8]}`;
-      cronSchedule = schedule;
-      job.setTime(new cron.CronTime(schedule));
-      job.start();
-
-      message.channel.send(`wipe schedule is now set to \`${schedule}\`
-next wipe will be at ${job.nextDates()}`);
-    }
-  },
-
-  'logs' : {
-    command : (message) => {
-      exec('tail ' + LOG_FILE, (err, stdout, stderr) => {
-        if (err) {
-          logger.error(err);
-          return;
         }
+      },
 
-        message.channel.send('```' + stdout + '```');
-      });
-    }
-  },
-
-  'logs all' :
-      {command : (message) => { message.channel.send('not implemented'); }},
-
-  'info' : {
-    command : (message) => {
-      exec('git rev-parse HEAD', (err, gitSha) => {
-        if (err) {
-          gitSha = 'ERR';
-          logger.error(err);
-        }
-
-        exec('node -v', (err, nodeVersion) => {
-          if (err) {
-            nodeVersion = 'ERR';
-            logger.error(err);
+      'schedule set <cron format>' : {
+        privileged : true,
+        command : (message) => {
+          let s = message.content.split(' ');
+          if (s.length !== 9) {
+            message.channel.send('invalid command');
+            return;
           }
 
-          exec('dig +short myip.opendns.com @resolver1.opendns.com',
-               (err, ip) => {
-                 if (err) {
-                   ip = 'ERR';
-                   logger.error(err);
-                 }
+          let schedule = `${s[3]} ${s[4]} ${s[5]} ${s[6]} ${s[7]} ${s[8]}`;
+          db.set('cronSchedule', schedule).write().then(() => {
+            job.setTime(new cron.CronTime(schedule));
+            job.start();
 
-                 exec('uname', (err, os) => {
-                   if (err) {
-                     os = 'ERR';
-                     logger.error(err);
-                   }
+            message.channel.send(`wipe schedule is now set to \`${schedule}\`
+next wipe will be at ${job.nextDates()}`);
+          });
+        }
+      },
 
-                   exec('uname -r', (err, osv) => {
+      'logs' : {
+        command : (message) => {
+          exec('tail ' + LOG_FILE, (err, stdout, stderr) => {
+            if (err) {
+              logger.error(err);
+              return;
+            }
+
+            message.channel.send('```' + stdout + '```');
+          });
+        }
+      },
+
+      'logs all' :
+          {command : (message) => { message.channel.send('not implemented'); }},
+
+      'info' : {
+        command : (message) => {
+          exec('git rev-parse HEAD', (err, gitSha) => {
+            if (err) {
+              gitSha = 'ERR';
+              logger.error(err);
+            }
+
+            exec('node -v', (err, nodeVersion) => {
+              if (err) {
+                nodeVersion = 'ERR';
+                logger.error(err);
+              }
+
+              exec('dig +short myip.opendns.com @resolver1.opendns.com',
+                   (err, ip) => {
                      if (err) {
-                       osv = 'ERR';
+                       ip = 'ERR';
                        logger.error(err);
                      }
 
-                     message.channel.send(`Wiper Bot Info:\`\`\`
+                     exec('uname', (err, os) => {
+                       if (err) {
+                         os = 'ERR';
+                         logger.error(err);
+                       }
+
+                       exec('uname -r', (err, osv) => {
+                         if (err) {
+                           osv = 'ERR';
+                           logger.error(err);
+                         }
+
+                         message.channel.send(`Wiper Bot Info:\`\`\`
 os: ${os.replace('\n', '')}
 os version: ${osv.replace('\n', '')}
 bot version: ${gitSha.replace('\n', '')}
@@ -284,115 +296,127 @@ node version: ${nodeVersion.replace('\n', '')}
 server time: ${new Date().toTimeString()}
 ip: ${ip}
 \`\`\``);
+                       });
+                     });
                    });
-                 });
-               });
-        });
-      });
+            });
+          });
+        }
+      },
+
+      'help' : {
+        command : (message) => {
+          let toSend = '';
+          let available = Object.keys(commands).filter(c => c !== 'default');
+
+          available.forEach(i => {
+            if (commands[i].privileged) {
+              toSend = toSend + '* ';
+            }
+
+            toSend = toSend + i + '\n';
+          });
+
+          message.channel.send(
+              'Available commands are:```\n' + toSend +
+              '```\nRun me by typing: `!wiper <command>`\n`*` denotes a privileged command that can only be run by the privileged role specified in \n`!wiper config`');
+        }
+      },
+
+      'default' : {
+        command : (message) => {
+          message.channel.send(
+              'I\'m sorry, I didn\'t understand your command, type `!wiper help` for a complete list of commands');
+        }
+      }
+    };
+
+    function stripVariables(command) {
+      let index = command.indexOf('<');
+      if (index === -1) {
+        return command;
+      } else {
+        return command.substring(0, index - 1);
+      }
     }
-  },
 
-  'help' : {
-    command : (message) => {
-      let toSend = '';
-      let available = Object.keys(commands).filter(c => c !== 'default');
+    function findMatchingCommand(text) {
+      let keys = Object.keys(commands);
+      keys.sort((a, b) => stripVariables(b).length - stripVariables(a).length);
 
-      available.forEach(i => {
-        if (commands[i].privileged) {
-          toSend = toSend + '* ';
+      let command = text.substring(7);
+      logger.info('command is "' + command + '"');
+      let match = keys.find(k => {
+        logger.debug('candidate is ' + k);
+        return command.startsWith(stripVariables(k));
+      });
+
+      return match ? commands[match] : commands['default'];
+    }
+
+    bot.login(auth.token);
+
+    bot.on('ready', evt => {
+      logger.info('wiper bot is up and ready to receive commands');
+
+      let cronSchedule = db.get('cronSchedule').value();
+
+      job = new cron.CronJob(cronSchedule, () => {
+        logger.info('schedule wipe has triggered');
+
+        let enableScheduledWipes =
+            db.get('config.enableScheduledWipes').value();
+
+        if (enableScheduledWipes === 'true') {
+          commands['wipe'].command({
+            guild : bot.guilds.first(), // TODO this could be bad if the bot is
+                                        // in multiple guilds
+            // TODO make sure this gets broadcast to the channels
+            channel : {send : (text) => { logger.info(text); }}
+          });
+        } else {
+          logger.info('scheduled wipes are disabled, skipping');
+        }
+      });
+
+      job.start();
+
+      logger.info('Bot is ready to receive messages');
+    });
+
+    bot.on('message', message => {
+      if (message.content.startsWith('!wiper')) {
+        logger.info(
+            'received command',
+            {command : message.content, user : message.author.username});
+        let command = findMatchingCommand(message.content);
+
+        if (command.privileged) {
+          let privilegedRole = db.get('config.privilegedRole').value();
+          if (!(message.member.roles.find(r => r.name === privilegedRole))) {
+            message.channel.send(`I'm sorry, you don't have the role \`${
+                privilegedRole}\`, you cannot execute this command`)
+            return;
+          }
         }
 
-        toSend = toSend + i + '\n';
-      });
-
-      message.channel.send(
-          'Available commands are:```\n' + toSend +
-          '```\nRun me by typing: `!wiper <command>`\n`*` denotes a privileged command that can only be run by the privileged role specified in \n`!wiper config`');
-    }
-  },
-
-  'default' : {
-    command : (message) => {
-      message.channel.send(
-          'I\'m sorry, I didn\'t understand your command, type `!wiper help` for a complete list of commands');
-    }
-  }
-};
-
-function stripVariables(command) {
-  let index = command.indexOf('<');
-  if (index === -1) {
-    return command;
-  } else {
-    return command.substring(0, index - 1);
-  }
-}
-
-function findMatchingCommand(text) {
-  let keys = Object.keys(commands);
-  keys.sort((a, b) => stripVariables(b).length - stripVariables(a).length);
-
-  let command = text.substring(7);
-  logger.info('command is "' + command + '"');
-  let match = keys.find(k => {
-    logger.debug('candidate is ' + k);
-    return command.startsWith(stripVariables(k));
-  });
-
-  return match ? commands[match] : commands['default'];
-}
-
-bot.login(auth.token);
-
-bot.on('ready', evt => {
-  job = new cron.CronJob(cronSchedule, () => {
-    logger.info('schedule wipe has triggered');
-
-    if (config.enableScheduledWipes) {
-      commands['wipe'].command({
-        guild : bot.guilds.first(), // TODO this could be bad if the bot is in
-                                    // multiple guilds
-        // TODO make sure this gets broadcast to the channels
-        channel : {send : (text) => { logger.info(text); }}
-      });
-    } else {
-      logger.info('scheduled wipes are disabled, skipping');
-    }
-  });
-
-  job.start();
-
-  logger.info('Bot is ready to receive messages');
-});
-
-bot.on('message', message => {
-  if (message.content.startsWith('!wiper')) {
-    logger.info('received command',
-                {command : message.content, user : message.author.username});
-    let command = findMatchingCommand(message.content);
-
-    if (command.privileged) {
-      if (!(message.member.roles.find(r => r.name === config.privilegedRole))) {
-        message.channel.send(`I'm sorry, you don't have the role \`${
-            config.privilegedRole}\`, you cannot execute this command`)
-        return;
+        command.command(message);
       }
-    }
+    });
+  });
 
-    command.command(message);
+  function getTargets() {
+    let blacklist = db.get('protected').value();
+    let targets = [];
+
+    bot.channels.forEach(chan => {
+      if (chan.type === 'text') {
+        if (!blacklist[chan.name]) {
+          targets.push(chan);
+        }
+      }
+    });
+
+    return targets;
   }
 });
-
-function getTargets() {
-  let targets = [];
-
-  bot.channels.forEach(chan => {
-    if (chan.type === 'text') {
-      if (!blacklist[chan.name]) {
-        targets.push(chan);
-      }
-    }
-  });
-
-  return targets;
-}

@@ -1,5 +1,7 @@
 let exec = require('child_process').exec
 let formatInfos = require('../padding');
+let uptime = require('../uptime');
+
 module.exports = logger => {
   return (message) => {
     exec('git rev-parse HEAD', (err, gitSha) => {
@@ -34,11 +36,13 @@ module.exports = logger => {
               }
 
               let infos = [
-                {key : 'os', value : os}, {key : 'os version', value : osv},
+                {key : 'os', value : os},
+                {key : 'os version', value : osv},
                 {key : 'bot version', value : gitSha},
                 {key : 'node version', value : nodeVersion},
                 {key : 'server time', value : new Date().toTimeString()},
-                {key : 'ip', value : ip}
+                {key : 'ip', value : ip},
+                {key : 'uptime', value : `${uptime() / 1000} seconds`},
               ];
 
               let toSend = formatInfos(infos);

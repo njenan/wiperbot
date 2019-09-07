@@ -4,7 +4,9 @@ module.exports = function(infos) {
 
   infos
       .map(info => {
-        info.value = info.value.replace('\n', '');
+        if (typeof info.value === 'string') {
+          info.value = info.value.replace('\n', '');
+        }
         return info;
       })
       .map(info => {
